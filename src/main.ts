@@ -19,7 +19,15 @@ const canvas = document.getElementById('game') as HTMLCanvasElement
 const stage = setupStage(canvas, W, H)
 const ctx = stage.ctx
 
-const BEST_KEY = 'tiara-best-v2'
+// 難易度。ノーマルは、ためている間の軌道や高さの目安を出さない
+type Level = 'easy' | 'normal'
+const LEVELS: { id: Level; label: string; note: string }[] = [
+  { id: 'easy', label: 'イージー', note: '跳ぶ前に軌道が見える' },
+  { id: 'normal', label: 'ノーマル', note: '目安なしで跳ぶ' },
+]
+const LEVEL_KEY = 'tiara-level'
+// イージーの鍵は、難易度を分ける前の記録をそのまま引き継ぐ
+const BEST_KEYS: Record<Level, string> = { easy: 'tiara-best-v2', normal: 'tiara-best-normal' }
 const course = buildCourse()
 const total = course.tiaras.length
 const tiaraSprite = makeTiaraSprite()
@@ -67,7 +75,8 @@ let actIdx = 0
 let bannerT = 99
 let camLock = 0
 let hudBump = 0
-let best = loadBest(BEST_KEY)
+let level: Level = localStorage.getItem(LEVEL_KEY) === 'normal' ? 'normal' : 'easy'
+const best: Record<Level, number> = { easy: loadBest(BEST_KEYS.easy), normal: loadBest(BEST_KEYS.normal) }
 let newBest = false
 let particles: Particle[] = []
 let popups: Popup[] = []
@@ -122,12 +131,9 @@ function reset() {
 function press() {
   held = true
   unlock()
-  if (phase === 'title') { open(); return }
-  if (phase === 'result') {
-    if (phaseT > 0.8) {
-      reset()
-      open()
-    }
+  // キーで押したとき。タイトルと結果では、選んでいる難易度で開演する
+  if (phase === 'title' || phase === 'result') {
+    startShow(level)
     return
   }
   if (phase !== 'play') return
@@ -139,6 +145,16 @@ function release() {
   held = false
   airPress = false
   if (charging) jump()
+}
+
+/** 難易度を決めて開演する。結果画面からは、すぐ押して飛ばしてしまわないよう少し待つ */
+function startShow(l: Level) {
+  if (phase === 'result' && phaseT <= 0.8) return
+  unlock()
+  level = l
+  localStorage.setItem(LEVEL_KEY, l)
+  if (phase === 'result') reset()
+  open()
 }
 
 /** 幕を開け、序曲を始める */
@@ -157,11 +173,32 @@ function hitMute(cx: number, cy: number): boolean {
   return true
 }
 
-setupHold(canvas, press, release, hitMute)
+const BTN_W = 190
+const BTN_H = 50
+/** 難易度のボタンの位置。y はボタンの中心 */
+function levelButtons(y: number) {
+  return LEVELS.map((l, i) => ({ ...l, x: W / 2 + (i === 0 ? -1 : 1) * (BTN_W / 2 + 16), y }))
+}
+const levelButtonsY = () => (phase === 'title' ? 375 : 425)
+
+/** タイトルと結果の画面では、難易度のボタンを押すと開演する。ほかの場所を押しても何もしない */
+function hitScreen(cx: number, cy: number): boolean {
+  if (hitMute(cx, cy)) return true
+  if (phase !== 'title' && phase !== 'result') return false
+  const p = stage.toView(cx, cy)
+  const b = levelButtons(levelButtonsY()).find((b) => Math.abs(p.x - b.x) <= BTN_W / 2 && Math.abs(p.y - b.y) <= BTN_H / 2)
+  if (b) startShow(b.id)
+  return true
+}
+
+setupHold(canvas, press, release, hitScreen)
 // 幕が開いたらすぐ鳴るよう、序曲はタイトル画面のうちに書き出しておく
 prepareSong(ACT_SONGS[0])
 window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyM' && !e.repeat) toggleMute()
+  if ((e.code === 'ArrowLeft' || e.code === 'ArrowRight') && (phase === 'title' || phase === 'result')) {
+    level = e.code === 'ArrowLeft' ? 'easy' : 'normal'
+  }
 })
 
 function startCharge() {
@@ -277,10 +314,10 @@ function bow(dt: number) {
 function finish() {
   go('result')
   playSong(MUSIC_BOX)
-  newBest = count > best
+  newBest = count > best[level]
   if (newBest) {
-    best = count
-    saveBest(BEST_KEY, best)
+    best[level] = count
+    saveBest(BEST_KEYS[level], count)
   }
 }
 
@@ -435,7 +472,7 @@ function draw() {
     if (x < -30 || x > W + 30) continue
     drawTiara(ctx, tiaraSprite, x, t.y, time, t.x * 0.013)
   }
-  if (charging) drawGuide(dsx)
+  if (charging && level === 'easy') drawGuide(dsx)
 
   // 足元の影とためのきらめき
   ctx.fillStyle = `rgba(60,20,30,${0.25 * Math.max(0, 1 - lift / 300)})`
@@ -787,14 +824,49 @@ function drawTitle() {
   ctx.font = `18px ${SERIF}`
   ctx.fillText('長押しで ためて、離して 跳ぶ', W / 2, 280)
   ctx.fillText('くるりと回って、ティアラを集めよう', W / 2, 310)
-  ctx.globalAlpha = 0.55 + 0.45 * Math.sin(time * 3)
-  ctx.font = `bold 19px ${SERIF}`
-  ctx.fillText('タップ・クリック・スペースキーで開演', W / 2, 382)
-  ctx.globalAlpha = 1
-  if (best > 0) {
-    ctx.font = `15px ${SERIF}`
-    ctx.fillStyle = '#f2cf7a'
-    ctx.fillText(`これまでの最高　${best} / ${total}`, W / 2, 436)
+  drawLevelButtons(levelButtonsY())
+  for (const b of levelButtons(levelButtonsY())) {
+    ctx.font = `13px ${SERIF}`
+    ctx.fillStyle = '#ffe9c4'
+    ctx.fillText(b.note, b.x, b.y + 42)
+    if (best[b.id] > 0) {
+      ctx.fillStyle = '#f2cf7a'
+      ctx.fillText(`最高　${best[b.id]} / ${total}`, b.x, b.y + 62)
+    }
+  }
+  ctx.restore()
+}
+
+/** 難易度のボタン。選んでいる方を金で塗り、ゆっくり光らせる */
+function drawLevelButtons(y: number) {
+  ctx.save()
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  for (const b of levelButtons(y)) {
+    const on = b.id === level
+    const x0 = b.x - BTN_W / 2
+    const y0 = b.y - BTN_H / 2
+    ctx.beginPath()
+    ctx.roundRect(x0, y0, BTN_W, BTN_H, 12)
+    if (on) {
+      const g = ctx.createLinearGradient(0, y0, 0, y0 + BTN_H)
+      g.addColorStop(0, '#fff2c2')
+      g.addColorStop(0.5, '#efc457')
+      g.addColorStop(1, '#c48d24')
+      ctx.fillStyle = g
+      ctx.shadowColor = `rgba(255,220,140,${0.45 + 0.3 * Math.sin(time * 3)})`
+      ctx.shadowBlur = 16
+    } else {
+      ctx.fillStyle = 'rgba(60,5,20,0.55)'
+    }
+    ctx.fill()
+    ctx.shadowBlur = 0
+    ctx.strokeStyle = '#e7b84d'
+    ctx.lineWidth = 2
+    ctx.stroke()
+    ctx.font = `bold 22px ${SERIF}`
+    ctx.fillStyle = on ? '#5a0f24' : '#f7d98a'
+    ctx.fillText(b.label, b.x, b.y + 1)
   }
   ctx.restore()
 }
@@ -816,7 +888,7 @@ function drawResult() {
   ctx.textBaseline = 'middle'
   ctx.fillStyle = '#ffe9c4'
   ctx.font = `18px ${SERIF}`
-  ctx.fillText('— カーテンコール —', W / 2, 112)
+  ctx.fillText(`— ${LEVELS.find((l) => l.id === level)!.label}　カーテンコール —`, W / 2, 112)
 
   blitTiara(ctx, tiaraSprite, W / 2 - 92, 186, 1.5)
   ctx.textAlign = 'left'
@@ -832,12 +904,12 @@ function drawResult() {
   goldText(rankOf(count), W / 2, 298, 38)
   ctx.font = `16px ${SERIF}`
   ctx.fillStyle = newBest ? '#ffe08a' : '#ffe9c4'
-  ctx.fillText(newBest ? '新記録！' : `これまでの最高　${best}`, W / 2, 350)
+  ctx.fillText(newBest ? '新記録！' : `これまでの最高　${best[level]}`, W / 2, 343)
   if (phaseT > 0.8) {
-    ctx.globalAlpha = 0.55 + 0.45 * Math.sin(time * 3)
-    ctx.font = `bold 18px ${SERIF}`
+    ctx.font = `15px ${SERIF}`
     ctx.fillStyle = '#ffe9c4'
-    ctx.fillText('タップでもう一度', W / 2, 420)
+    ctx.fillText('もう一度', W / 2, 380)
+    drawLevelButtons(levelButtonsY())
   }
   ctx.restore()
 }
