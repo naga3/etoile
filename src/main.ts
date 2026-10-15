@@ -461,7 +461,7 @@ function draw() {
   ctx.drawImage(dancerLayer, dsx - DOX, feetY - DOY, DW, DH)
   ctx.restore()
 
-  drawMarks(cam)
+  if (level === 'easy') drawMarks(cam)
   drawGoal(course.goalX + 260 - cam)
   drawDarkness(mood.dark, dsx, feetY)
   drawSpotlight(dsx)
