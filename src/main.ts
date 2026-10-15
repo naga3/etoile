@@ -21,9 +21,9 @@ const ctx = stage.ctx
 
 // 難易度。ノーマルは、ためている間の軌道や高さの目安を出さない
 type Level = 'easy' | 'normal'
-const LEVELS: { id: Level; label: string; note: string }[] = [
-  { id: 'easy', label: 'イージー', note: '跳ぶ前に軌道が見える' },
-  { id: 'normal', label: 'ノーマル', note: '目安なしで跳ぶ' },
+const LEVELS: { id: Level; label: string }[] = [
+  { id: 'easy', label: 'イージー' },
+  { id: 'normal', label: 'ノーマル' },
 ]
 const LEVEL_KEY = 'tiara-level'
 // イージーの鍵は、難易度を分ける前の記録をそのまま引き継ぐ
@@ -826,12 +826,10 @@ function drawTitle() {
   ctx.fillText('くるりと回って、ティアラを集めよう', W / 2, 310)
   drawLevelButtons(levelButtonsY())
   for (const b of levelButtons(levelButtonsY())) {
-    ctx.font = `13px ${SERIF}`
-    ctx.fillStyle = '#ffe9c4'
-    ctx.fillText(b.note, b.x, b.y + 42)
     if (best[b.id] > 0) {
+      ctx.font = `13px ${SERIF}`
       ctx.fillStyle = '#f2cf7a'
-      ctx.fillText(`最高　${best[b.id]} / ${total}`, b.x, b.y + 62)
+      ctx.fillText(`最高　${best[b.id]} / ${total}`, b.x, b.y + 42)
     }
   }
   ctx.restore()
