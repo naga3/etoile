@@ -43,20 +43,29 @@ export function unlock(): void {
   master.gain.value = muted ? 0 : VOLUME
   master.connect(ctx.destination)
 
-  // その場で鳴らす残響は効果音だけに使う。曲の残響は書き出しに含める
-  const reverb = ctx.createConvolver()
-  reverb.buffer = impulse(ctx, REVERB)
-  const wet = ctx.createGain()
-  wet.gain.value = 0.32
-  reverb.connect(wet).connect(master)
-
   musicBus = ctx.createGain()
   musicBus.gain.value = 0.7
   musicBus.connect(master)
   sfxBus = ctx.createGain()
   sfxBus.gain.value = 0.9
   sfxBus.connect(master)
-  sfxBus.connect(reverb)
+
+  // 効果音の響き。その場で計算する残響はスマホで重く、鳴らしてから響きが消えるまでの
+  // 数秒、BGM ごとノイズになった。少し遅れて小さく繰り返すやまびこで代える。
+  // 曲の残響は書き出しに含めてある
+  const delay = ctx.createDelay(1)
+  delay.delayTime.value = 0.13
+  const tone = ctx.createBiquadFilter()
+  tone.type = 'lowpass'
+  tone.frequency.value = 3500
+  const feedback = ctx.createGain()
+  feedback.gain.value = 0.35
+  const wet = ctx.createGain()
+  wet.gain.value = 0.3
+  sfxBus.connect(delay)
+  delay.connect(tone)
+  tone.connect(feedback).connect(delay)
+  tone.connect(wet).connect(master)
 }
 
 // --- 曲 ---
