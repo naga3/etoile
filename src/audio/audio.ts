@@ -9,6 +9,7 @@ const VOLUME = 0.8
 const REVERB = 2.4 // 残響の長さ（秒）
 const SONG_RATE = 24000 // 書き出す曲のサンプリング周波数。高い倍音まで足りて、メモリは半分ですむ
 const SONG_HEAD = 4 // 前の周の余韻が消えきるまでの秒数。2 周目の頭をこの長さだけ書き足す
+const SEAM = 0.02 // つなぎ目で混ぜ合わせる長さ（秒）
 
 let ctx: AudioContext | null = null
 let master: GainNode
@@ -94,7 +95,26 @@ function renderSong(song: Song): Promise<AudioBuffer> {
       }
     }
   }
-  return off.startRendering()
+  return off.startRendering().then((buf) => smoothSeam(buf, song))
+}
+
+/**
+ * つなぎ目の段差を消す。区間の終わり SEAM 秒を、区間の頭の直前の波形へ少しずつ混ぜ替える。
+ * 終わりの一点が頭の直前とそろうので、頭へ戻った瞬間に音が飛ばない。
+ */
+function smoothSeam(buf: AudioBuffer, song: Song): AudioBuffer {
+  const [start, end] = loopPoints(song)
+  const a = Math.round(start * buf.sampleRate)
+  const b = Math.min(buf.length, Math.round(end * buf.sampleRate))
+  const n = Math.round(SEAM * buf.sampleRate)
+  for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+    const d = buf.getChannelData(ch)
+    for (let i = 0; i < n; i++) {
+      const w = (i + 1) / n
+      d[b - n + i] = d[b - n + i] * (1 - w) + d[a - n + i] * w
+    }
+  }
+  return buf
 }
 
 /** 書き出した曲は取っておく（全曲で 15MB ほど） */
