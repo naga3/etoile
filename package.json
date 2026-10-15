@@ -1,7 +1,7 @@
 {
-  "name": "spinning-jump-tiara",
+  "name": "etoile",
   "version": "1.0.0",
-  "description": "砧に咲くエトワール。長押しでためて跳び、回りながらティアラを集めるバレリーナのゲーム",
+  "description": "仮に咲くエトワール。長押しでためて跳び、回りながらティアラを集めるバレリーナのゲーム",
   "private": true,
   "type": "module",
   "scripts": {
