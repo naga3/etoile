@@ -12,7 +12,7 @@ import {
   SERIF, drawBackdrop, drawFloor, drawFootlights, drawMainCurtain, drawSets, makeProscenium, moodAt,
 } from './art/scene'
 import { blitTiara, drawTiara, makeTiaraSprite, sparkle, starPath } from './art/tiara'
-import { bravaSound, collectSound, isMuted, jumpSound, playSong, toggleMute, unlock } from './audio/audio'
+import { bravaSound, collectSound, isMuted, jumpSound, playSong, prepareSong, toggleMute, unlock } from './audio/audio'
 import { ACT_SONGS, MUSIC_BOX } from './audio/songs'
 
 const canvas = document.getElementById('game') as HTMLCanvasElement
@@ -145,6 +145,7 @@ function release() {
 function open() {
   go('opening')
   playSong(ACT_SONGS[0])
+  prepareSong(ACT_SONGS[1])
 }
 
 // 左上の音のボタン
@@ -157,6 +158,8 @@ function hitMute(cx: number, cy: number): boolean {
 }
 
 setupHold(canvas, press, release, hitMute)
+// 幕が開いたらすぐ鳴るよう、序曲はタイトル画面のうちに書き出しておく
+prepareSong(ACT_SONGS[0])
 window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyM' && !e.repeat) toggleMute()
 })
@@ -255,6 +258,7 @@ function play(dt: number) {
     actIdx = i
     bannerT = 0
     playSong(ACT_SONGS[i])
+    prepareSong(ACT_SONGS[i + 1] ?? MUSIC_BOX)
   }
   if (!air && wx >= course.goalX) {
     camLock = wx - DANCER_X

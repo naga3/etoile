@@ -5,8 +5,10 @@
 import { type Inst, type Song } from './songs'
 
 const MUTE_KEY = 'tiara-muted'
-const LOOKAHEAD = 0.2 // 何秒先まで予約しておくか
 const VOLUME = 0.8
+const REVERB = 2.4 // 残響の長さ（秒）
+const SONG_RATE = 24000 // 書き出す曲のサンプリング周波数。高い倍音まで足りて、メモリは半分ですむ
+const SONG_HEAD = 4 // 前の周の余韻が消えきるまでの秒数。2 周目の頭をこの長さだけ書き足す
 
 let ctx: AudioContext | null = null
 let master: GainNode
@@ -14,18 +16,7 @@ let musicBus: GainNode
 let sfxBus: GainNode
 let muted = localStorage.getItem(MUTE_KEY) === '1'
 
-interface Ev { beat: number; dur: number; midi: number; inst: Inst; vol: number }
-interface Playing {
-  song: Song
-  out: GainNode
-  intro: Ev[]
-  loop: Ev[]
-  /** 予約済みの位置。inIntro の間は前奏の列、それ以降は繰り返しの列を指す */
-  inIntro: boolean
-  index: number
-  /** いま読んでいる列の 0 拍目の時刻 */
-  base: number
-}
+interface Playing { song: Song; out: GainNode; src?: AudioBufferSourceNode }
 let current: Playing | null = null
 let ground = 0
 
@@ -51,90 +42,112 @@ export function unlock(): void {
   master.gain.value = muted ? 0 : VOLUME
   master.connect(ctx.destination)
 
+  // その場で鳴らす残響は効果音だけに使う。曲の残響は書き出しに含める
   const reverb = ctx.createConvolver()
-  reverb.buffer = impulse(ctx, 2.4)
+  reverb.buffer = impulse(ctx, REVERB)
   const wet = ctx.createGain()
   wet.gain.value = 0.32
   reverb.connect(wet).connect(master)
 
   musicBus = ctx.createGain()
   musicBus.gain.value = 0.7
+  musicBus.connect(master)
   sfxBus = ctx.createGain()
   sfxBus.gain.value = 0.9
-  for (const bus of [musicBus, sfxBus]) {
-    bus.connect(master)
-    bus.connect(reverb)
-  }
-  window.setInterval(tick, 50)
+  sfxBus.connect(master)
+  sfxBus.connect(reverb)
 }
 
-/** 曲を替える。いまの曲は 1 秒かけて消える */
+// --- 曲 ---
+// スマホでは、その場で何十もの音を合成すると計算が追いつかず音が途切れる。
+// そこで曲はあらかじめ音の波形に書き出し、それを繰り返し再生する。
+
+const rendered = new Map<Song, Promise<AudioBuffer>>()
+
+/**
+ * 繰り返す区間。1 周目の頭から SONG_HEAD 秒ずらすと、区間の頭と終わりがどちらも
+ * 「前の周の余韻が消えた後の同じ位置」になり、つなぎ目で響きが途切れない。
+ */
+function loopPoints(song: Song): [number, number] {
+  const spb = 60 / song.bpm
+  return [song.intro * spb + SONG_HEAD, (song.intro + song.loop) * spb + SONG_HEAD]
+}
+
+/** 曲を書き出す。前奏と 1 周、それに 2 周目の頭 SONG_HEAD 秒。旋律に左右の広がりはないので 1 チャンネル */
+function renderSong(song: Song): Promise<AudioBuffer> {
+  const spb = 60 / song.bpm
+  const [, end] = loopPoints(song)
+  const off = new OfflineAudioContext(1, Math.ceil(end * SONG_RATE), SONG_RATE)
+  const dry = off.createGain()
+  dry.connect(off.destination)
+  const reverb = off.createConvolver()
+  reverb.buffer = impulse(off, REVERB)
+  const wet = off.createGain()
+  wet.gain.value = 0.32
+  dry.connect(reverb)
+  reverb.connect(wet).connect(off.destination)
+  for (const p of song.parts) {
+    for (const [beat, dur, midi] of p.notes) {
+      voice(off, p.inst, dry, beat * spb, midi, dur * spb, p.vol)
+      if (beat >= song.intro && (beat - song.intro) * spb < SONG_HEAD) {
+        voice(off, p.inst, dry, (beat + song.loop) * spb, midi, dur * spb, p.vol)
+      }
+    }
+  }
+  return off.startRendering()
+}
+
+/** 書き出した曲は取っておく（全曲で 15MB ほど） */
+function songBuffer(song: Song): Promise<AudioBuffer> {
+  let b = rendered.get(song)
+  if (!b) {
+    b = renderSong(song)
+    rendered.set(song, b)
+  }
+  return b
+}
+
+/** 次に使う曲を先に書き出しておく。書き出しは音を出さないので、画面に触れる前から始めてよい */
+export function prepareSong(song: Song | undefined): void {
+  if (song) void songBuffer(song)
+}
+
+/** 曲を替える。いまの曲は 1 秒ほどかけて消える */
 export function playSong(song: Song | null): void {
   if (!ctx || current?.song === song) return
+  const now = ctx.currentTime
   if (current) {
-    const old = current.out
-    old.gain.setTargetAtTime(0, ctx.currentTime, 0.35)
-    window.setTimeout(() => old.disconnect(), 2500)
+    current.out.gain.setTargetAtTime(0, now, 0.35)
+    current.src?.stop(now + 2.5)
     current = null
   }
   if (!song) return
-  const out = ctx.createGain()
-  out.connect(musicBus)
-  const flat = (from: number, to: number, shift: number) => {
-    const evs: Ev[] = []
-    for (const p of song.parts) {
-      for (const [beat, dur, midi] of p.notes) {
-        if (beat >= from && beat < to) evs.push({ beat: beat - shift, dur, midi, inst: p.inst, vol: p.vol })
-      }
-    }
-    return evs.sort((a, b) => a.beat - b.beat)
-  }
-  current = {
-    song,
-    out,
-    intro: flat(0, song.intro, 0),
-    loop: flat(song.intro, song.intro + song.loop, song.intro),
-    inIntro: song.intro > 0,
-    index: 0,
-    base: ctx.currentTime + 0.1,
-  }
-  tick()
-}
-
-function tick() {
-  if (!ctx || !current) return
-  const p = current
-  const spb = 60 / p.song.bpm
-  const now = ctx.currentTime
-  // 裏のタブにいた間に遅れた分は鳴らさずに飛ばす
-  for (let guard = 0; guard < 2000; guard++) {
-    const list = p.inIntro ? p.intro : p.loop
-    if (p.index >= list.length) {
-      p.base += (p.inIntro ? p.song.intro : p.song.loop) * spb
-      p.inIntro = false
-      p.index = 0
-      continue
-    }
-    const ev = list[p.index]
-    const t = p.base + ev.beat * spb
-    if (t > now + LOOKAHEAD) break
-    if (t >= now - 0.05) voice(ev.inst, p.out, Math.max(t, now), ev.midi, ev.dur * spb, ev.vol)
-    p.index++
-  }
+  const playing: Playing = { song, out: ctx.createGain() }
+  playing.out.connect(musicBus)
+  current = playing
+  void songBuffer(song).then((buf) => {
+    if (!ctx || current !== playing) return
+    const src = ctx.createBufferSource()
+    src.buffer = buf
+    src.loop = true
+    ;[src.loopStart, src.loopEnd] = loopPoints(song)
+    src.connect(playing.out)
+    src.start()
+    playing.src = src
+  })
 }
 
 // --- 楽器 ---
 
-function voice(inst: Inst, dest: AudioNode, t: number, midi: number, dur: number, vol: number): void {
-  if (!ctx) return
+function voice(c: BaseAudioContext, inst: Inst, dest: AudioNode, t: number, midi: number, dur: number, vol: number): void {
   const f = freq(midi)
-  const g = ctx.createGain()
+  const g = c.createGain()
   g.connect(dest)
   const osc = (type: OscillatorType, fr: number, gain: number, decay?: number) => {
-    const o = ctx!.createOscillator()
+    const o = c.createOscillator()
     o.type = type
     o.frequency.value = fr
-    const og = ctx!.createGain()
+    const og = c.createGain()
     og.gain.setValueAtTime(gain, t)
     if (decay) og.gain.exponentialRampToValueAtTime(0.0001, t + decay)
     o.connect(og).connect(g)
@@ -154,7 +167,7 @@ function voice(inst: Inst, dest: AudioNode, t: number, midi: number, dur: number
   } else if (inst === 'pluck') {
     // ピチカート
     end = t + Math.min(dur, 0.6) + 0.25
-    const lp = ctx.createBiquadFilter()
+    const lp = c.createBiquadFilter()
     lp.type = 'lowpass'
     lp.frequency.value = 1100
     g.disconnect()
@@ -173,7 +186,7 @@ function voice(inst: Inst, dest: AudioNode, t: number, midi: number, dur: number
   } else {
     // 弦の和音
     end = t + dur + 0.5
-    const lp = ctx.createBiquadFilter()
+    const lp = c.createBiquadFilter()
     lp.type = 'lowpass'
     lp.frequency.value = 1500
     g.disconnect()
@@ -190,7 +203,7 @@ function voice(inst: Inst, dest: AudioNode, t: number, midi: number, dur: number
   }
 }
 
-function impulse(c: AudioContext, seconds: number): AudioBuffer {
+function impulse(c: BaseAudioContext, seconds: number): AudioBuffer {
   const len = Math.floor(c.sampleRate * seconds)
   const buf = c.createBuffer(2, len, c.sampleRate)
   for (let ch = 0; ch < 2; ch++) {
@@ -249,7 +262,7 @@ export function collectSound(combo: number): void {
 export function jumpSound(power: number): void {
   if (!ctx) return
   const n = 3 + Math.round(power * 5)
-  for (let k = 0; k < n; k++) voice('harp', sfxBus, ctx.currentTime + k * 0.03, scaleNote(k) - 24, 0.2, 0.1)
+  for (let k = 0; k < n; k++) voice(ctx, 'harp', sfxBus, ctx.currentTime + k * 0.03, scaleNote(k) - 24, 0.2, 0.1)
 }
 
 /** 弧を全部取った */
